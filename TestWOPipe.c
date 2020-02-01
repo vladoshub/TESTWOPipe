@@ -1,4 +1,3 @@
-#include <wiringPi.h>
 #include <stdio.h>
 #include <math.h>
 #include <sys/time.h>
@@ -6,47 +5,58 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <pigpio.h>
+#include "rotary_encoder.h"
 #define countElements 20000
 #define countBuf 3
 #define countBufArray 10
 
-enum workType{
-Ready,
-Write,
-Pause
+enum workType
+{
+  Ready,
+  Write,
+  Pause
 };
 
-int n=0;
+int n = 0;
 char out[countBufArray];
-bool State_A, State_B;//каналы gpio
-bool Mah=true;//фикс движения обратно
-double Time[countElements];//массив с временем
-int Coord[countElements];//массив с координатами
-long Coordinate = 0;//координата
-int count=0;//счетчик в массиве
-struct timeval start;//время от запуска всей программы(не нашел другой метод,поэтому просто будем вычитать это значение из времени полученного при срабатывания прерывания)
-struct timeval timevals[countElements];//массив структуры миллисекунд
-int stopReadFromPipe=100000;//остановка на 1/10 сек для считывания с pipe
-char readbuffer[countBuf];//буфер для чтения
-char bufe[countBuf];//буфер для чтения
-char Channel='o';//напралвение движения
-int pendPoint=10;//точка начала отчета
-int offsetPointMax=200;//максимально возможное смещение в сторону противоположную перемещению маятника при измерении маха
-enum workType typeWork=Pause;//режим сенсора
+bool State_A, State_B;	
+bool Mah = true;	
+double Time[countElements];	
+int Coord[countElements];
+static short Coordinate = 0;	
+static short Coordinate2 = 0;	
+int count = 0;			
+struct timeval start;	
+struct timeval timevals[countElements];	
+int stopReadFromPipe = 100000;	
+char readbuffer[countBuf];	
+char bufe[countBuf];	
+char Channel = 'o';		
+short pendPoint = 10;		
+short pendOffsetNow = 0;	
+short pendOffset = 10;	
+enum workType typeWork = Ready;	
 
 void timevalToDouble(){//перевод из формата timaval в double
 for(int i=0;i<=count;i++)
 Time[i]=(double)(timevals[i].tv_usec - start.tv_usec) / 1000000 + (double)(timevals[i].tv_sec - start.tv_sec);//вычисляем разность времени для каждого тика
 }
 
-void Clear(){
-for(int i=0;i<=count;i++){
-Time[i]=0;
-Coord[i]=0;
-timevals[i]=(struct timeval){0};
-}
-start = (struct timeval){0};
-count=0;
+void Clear ()
+{
+  for (int i = 0; i <= count; i++)
+    {
+      Time[i] = 0;
+      Coord[i] = 0;
+      timevals[i] = (struct timeval)
+      {
+      0};
+    }
+  start = (struct timeval)
+  {
+  0};
+  count = 0;
 }
 
 void getCurrentCoordinate(){ //получить текующую координату
@@ -76,168 +86,85 @@ printf("s\n",out);
 Clear();
 }
 
-void ISR_A()//прерывание по каналу A
+
+
+void callback(int way)
 {
-switch(typeWork){//смотрим текущее состояние работы
-
-case Ready ://ожидание смещения для записи
-if (digitalRead(24))
-Coordinate++;
-if(abs(Coordinate)>pendPoint){//проверка на смещение относительно начала
-typeWork=Write;//переход в режим записи
-Channel='+';
-}//учет направления движения
-else {
-Coordinate--;
-if(abs(Coordinate)>pendPoint){//переход в режим записи
-typeWork=Write;
-Channel='-';
-}//учет направления движения
-}
-break;
-
-case Write ://запись данных в память
-if (digitalRead(24))
-{  Coordinate++;
-   if(Channel=='+'){//если текущее направление движения совпадает с начальным-пишем
-Coord[count]=abs(Coordinate);//коордианта
-gettimeofday(&timevals[count], NULL);//время
-count++;//ячейка массива
-Mah=true;//снимаем фиксацию с offsetPointMax
-}
-else{//если пошли обратно
-if(Mah){//если первое отклонение назад
-offsetPointMax=abs(Coordinate)-offsetPointMax;//записываем начальную коордианту откуда пошло движение назад
-Mah=false;//фиксируем коордианту откуда пошло движение назад
-}
-Coordinate++;
-if(abs(Coordinate)<=offsetPointMax){//смотрим на сколько сместилось
-typeWork=Pause;//если да перестаем писать
-}
-
-}
-}
-else {//движение в противоположную сторону
-
-
-if(Channel=='-'){//если текущее направление движения совпадает с начальным-пишем
-Coordinate--;
-Coord[count]=abs(Coordinate);
-gettimeofday(&timevals[count], NULL);
-count++;
-Mah=true;
-}
-else{//иначе пошли обратно
-if(Mah){//если первое или последовательное отклонение назад
-offsetPointMax=abs(Coordinate)-offsetPointMax;
-Mah=false;
-}
-Coordinate--;
-if(abs(Coordinate)<=offsetPointMax){
-typeWork=Pause;
-}
-}
-
-}
-break;
-case Pause://просто отслеживаем маятик без записи в память
-if (digitalRead(24))
-Coordinate++;
-else {
-Coordinate--;
-}
-break;
-}
-}
-
-void ISR_B()
-{
-switch(typeWork){
-
-case Ready ://ожидание сдвига маятника на n тиков
-if (digitalRead(23))
-{
-Coordinate--;
-if(abs(Coordinate)>pendPoint){//переход в режим записи
-typeWork=Write;
-Channel='-';
-}//учет направления движения
-}
-else {
-Coordinate++;
-if(abs(Coordinate)>pendPoint){//переход в режим записи
-typeWork=Write;
-Channel='+';
-}//учет направления движения
-}
-break;
-
-case Write ://запись маха
-if (digitalRead(23))
-{Coordinate--;
-if(Channel=='-'){//если текущее направление движения совпадает с начальным-пишем
-Coordinate++;
-Coord[count]=abs(Coordinate);
-gettimeofday(&timevals[count], NULL);
-count++;
-Mah=true;
-}
-else{//иначе пошли обратно
-if(Mah){//если первое или последовательное отклонение назад
-offsetPointMax=abs(Coordinate)-offsetPointMax;
-Mah=false;
-}
-Coordinate--;
-if(abs(Coordinate)<=offsetPointMax){
-typeWork=Pause;
-}
+   Coordinate2=Coordinate;
+   Coordinate += way;
+   switch(typeWork){
+	    
+   case Ready:
+   if (abs(Coordinate) > pendPoint){
+	    {		
+	      if(Coordinate>0)
+	      Channel = '+';
+	      else
+	      Channel = '-';
+	      typeWork = Write;
+	    }			
+	}
+   break;
+   
+   
+   
+   
+   
+   case Write:
+	      Coord[count] = abs (Coordinate);
+	      gettimeofday (&timevals[count], NULL);
+	      count++;
+	      switch (Channel){
+	          case '+':
+	          if(Coordinate2>Coordinate){
+	              if(Mah==true)
+	              pendOffsetNow = Coordinate - pendOffset;
+	              if(pendOffsetNow>=Coordinate){
+	              typeWork=Pause;
+	              Mah=false;
+	              }
+	          }
+	          else
+	          {
+	              Mah=true;
+	          }
+	          
+	          case '-':
+	          if(Coordinate2<Coordinate){
+	              if(Mah==true)
+	              pendOffsetNow = Coordinate + pendOffset;
+	              if(pendOffsetNow<=Coordinate){
+	              typeWork=Pause;
+	              Mah=false;
+	              }
+	          }
+	          else
+	          {
+	              Mah=true;
+	          }
+	      }
+	      	  
+   
+   
+   break;
+   
+   case Pause:
+   break;
+   
+   
+   default:
+   break;
 
 }
 }
-else {//движение в противоположную сторону
-if(Channel=='+'){//если текущее направление движения совпадает с начальным-пишем
-Coordinate++;
-Coord[count]=abs(Coordinate);
-gettimeofday(&timevals[count], NULL);
-count++;
-Mah=true;
-}
-else{//иначе пошли обратно
-if(Mah){//если первое или последовательное отклонение назад
-offsetPointMax=abs(Coordinate)-offsetPointMax;
-Mah=false;
-}
-Coordinate++;
-if(abs(Coordinate)<=offsetPointMax){
-typeWork=Pause;
-}
-}
-
-}
-
-break;
-
-case Pause ://просто отслеживаем маятик без записи в память
-if (digitalRead(23))
-Coordinate--;
-else {
-Coordinate++;
-}
-break;
-
-}
-}
-
 
 
 int main()
 {
-readbuffer[0]='0';
-wiringPiSetupGpio (); //BCM mode
-pinMode (23, INPUT);
-pinMode(24, INPUT);
-wiringPiISR(23,INT_EDGE_RISING,ISR_A);
-wiringPiISR(24,INT_EDGE_RISING,ISR_B);
+  _Renc_t * renc;
+  if (gpioInitialise() < 0) return 1;
+  renc = Pi_Renc(17, 27, callback);
+  readbuffer[0] = '0';
 while(1) {
 
  
